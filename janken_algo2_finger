@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>AI じゃんけん・あっち向いてほい【アルゴリズム1 finger版】</title>
+<style>
+  :root{--bg:#111827;--card:#1f2937;--acc:#3b82f6;--ok:#22c55e;--ng:#ef4444;--warn:#f59e0b;--sup:#a855f7}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:#fff;min-height:100dvh;padding:8px}
+  .wrap{max-width:1000px;margin:0 auto;display:grid;gap:8px;grid-template-columns:1fr}
+  @media(min-width:760px){.wrap{grid-template-columns:1fr 1fr}.full{grid-column:1/-1}}
+  h1{font-size:1.1rem;text-align:center}
+  .status{text-align:center}
+  #phase{font-weight:700;color:var(--warn)}
+  #msg{min-height:1.6em;font-size:1.2rem;font-weight:700}
+  #speech{color:#93c5fd;font-size:.9rem;min-height:1.2em}
+  .stage{position:relative;aspect-ratio:4/3;background:#000;border-radius:14px;overflow:hidden}
+  @media(max-width:759px){.stage{aspect-ratio:3/4}}
+  video,canvas.cam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  .hud{position:absolute;left:8px;top:8px;background:rgba(0,0,0,.6);padding:4px 8px;border-radius:8px;font-size:.75rem;font-family:monospace}
+  .panel{display:grid;gap:8px;grid-template-columns:1fr 1fr}
+  .card{background:var(--card);border-radius:12px;padding:8px;text-align:center}
+  .big{font-size:3.6rem;line-height:1.2}
+  .huge{font-size:7.2rem;line-height:1.1}
+  .sub{font-size:.8rem;opacity:.8}
+  #score{font-size:1.6rem;font-weight:700}
+  #aiFace{width:240px;height:240px;max-width:100%;margin:0 auto;display:block}
+  .row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+  button{flex:1;min-width:90px;padding:14px;border:0;border-radius:12px;font-size:1.05rem;font-weight:700;color:#fff;background:var(--acc);cursor:pointer}
+  button:disabled{opacity:.4;cursor:default}
+  #go{background:var(--ng)}
+  #superBtn{background:#374151}#superBtn.on{background:var(--sup);box-shadow:0 0 12px var(--sup)}
+  select{padding:8px;border-radius:8px;border:0}
+  label{font-size:.85rem;display:flex;align-items:center;gap:4px}
+  .bar{height:6px;background:#000;border-radius:3px;overflow:hidden;margin-top:4px}
+  .bar i{display:block;height:100%;width:0;background:var(--ok);transition:width .2s}
+  .help{font-size:.8rem;opacity:.75;text-align:center}
+  .win{color:var(--ok)}.lose{color:var(--ng)}.sup{color:var(--sup)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="full">
+    <h1>🤖 AI じゃんけん・あっち向いてほい【アルゴリズム1 finger版】</h1>
+    <div class="status"><div id="phase">待機中</div><div id="msg">「開始」を押してカメラを許可してください</div><div id="speech"></div></div>
+  </div>
+
+  <div class="stage">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="overlay" class="cam"></canvas>
+    <div class="hud" id="hud">未起動</div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <div class="card"><div class="sub">あなた</div><div class="big" id="pHand">🤔</div>
+        <div class="sub" id="pInfo">未確定</div><div class="bar"><i id="stab"></i></div>
+        <div class="sub" id="pFace">顔: -</div></div>
+      <div class="card"><div class="sub">AI <span id="predInfo" class="sup"></span></div>
+        <canvas id="aiFace" width="240" height="240"></canvas><div class="big" id="aHand">🤖</div></div>
+    </div>
+    <div class="card" style="margin-top:8px"><div class="sub">スコア（あなた : AI）</div><div id="score">0 : 0</div><div class="sub" id="roundInfo">&nbsp;</div></div>
+    <div class="row" style="margin-top:8px">
+      <button id="start">開始</button>
+      <button id="go" disabled>セッション開始</button>
+      <button id="superBtn">スーパーモード OFF</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="reset">リセット</button>
+      <select id="cam"><option value="user">内カメラ</option><option value="environment">外カメラ</option></select>
+      <label><input type="checkbox" id="voice" checked>音声</label>
+    </div>
+    <p class="help" style="margin-top:8px">セッション開始→指で1〜3本を示して勝負回数を決定。「ぽん」で手を出す。<br>
+      AIが勝ったらAIの指と<b>違う方向</b>に顔を向ける。あなたが勝ったら人差し指で方向を指す。</p>
+  </div>
+</div>
+
+<script type="module">
+import {HandLandmarker, FaceLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+/* ================= 手の分類（finger版：角度＋指先距離の併用、相対判定） ================= */
+const F={thumb:[1,2,3,4],index:[5,6,7,8],middle:[9,10,11,12],ring:[13,14,15,16],pinky:[17,18,19,20]};
+const FOUR=["index","middle","ring","pinky"];
+const CFG={ext:40,curled:70,pointLen:0.6,faceX:0.15,faceY:0.07,
+           preWin:150,hardDeadline:120,confidence:0.80,sigma:12,maxHorizon:0.25,
+           preFaceWin:250,velX:0.05,velY:0.03,tipVel:0.08};
+const sub=(a,b)=>[a.x-b.x,a.y-b.y,a.z-b.z], norm=v=>Math.hypot(...v);
+function angle(a,b,c){const v1=sub(a,b),v2=sub(c,b),n=norm(v1)*norm(v2);if(n<1e-9)return 180;
+  return Math.acos(Math.max(-1,Math.min(1,(v1[0]*v2[0]+v1[1]*v2[1]+v1[2]*v2[2])/n)))*180/Math.PI;}
+const palm=lm=>norm(sub(lm[9],lm[0]))+1e-9;
+function curl(lm,f){const[m,p,d,t]=F[f];return((180-angle(lm[m],lm[p],lm[d]))+(180-angle(lm[p],lm[d],lm[t])))/2;}
+const curls=lm=>Object.fromEntries(FOUR.map(f=>[f,curl(lm,f)]));
+const tipRatio=(lm,f)=>norm(sub(lm[F[f][3]],lm[0]))/palm(lm);          // 伸展≈1.7〜2.0, 屈曲≈0.8〜1.2
+function extended(lm,f,c){return c[f]<CFG.ext||tipRatio(lm,f)>1.5;}
+function thumbOut(lm){return norm(sub(lm[4],lm[9]))/palm(lm)>0.9;}
+function pointDir(lm){const v=[lm[8].x-lm[5].x,lm[8].y-lm[5].y];
+  if(Math.hypot(...v)/palm(lm)<CFG.pointLen)return null;return dirOf(-v[0],v[1]);}
+function dirOf(sx,sy){const a=Math.atan2(-sy,sx)*180/Math.PI;
+  if(a>=-45&&a<45)return"right";if(a>=45&&a<135)return"up";if(a>=-135&&a<-45)return"down";return"left";}
+function classify(lm){const c=curls(lm);const e=Object.fromEntries(FOUR.map(f=>[f,extended(lm,f,c)]));
+  const n=FOUR.filter(f=>e[f]).length;
+  if(FOUR.every(f=>c[f]>=CFG.curled&&tipRatio(lm,f)<1.3))return{g:"rock",c};
+  const im=(c.index+c.middle)/2, rp=(c.ring+c.pinky)/2;
+  const imTip=(tipRatio(lm,"index")+tipRatio(lm,"middle"))/2, rpTip=(tipRatio(lm,"ring")+tipRatio(lm,"pinky"))/2;
+  if(e.index&&e.middle&&(rp-im>25||imTip-rpTip>0.45))return{g:"scissors",c};
+  if(n===4||(e.index&&e.middle&&e.ring&&thumbOut(lm)))return{g:"paper",c};
+  if(e.index&&!e.middle&&!e.ring&&!e.pinky)return{g:pointDir(lm)||"unknown",c};
+  return{g:"unknown",c};}
+const fingerCount=lm=>{const c=curls(lm);return FOUR.filter(f=>extended(lm,f,c)).length;};
+
+/* ================= 顔の向き ================= */
+function faceMetrics(f){const w=Math.abs(f[454].x-f[234].x)+1e-9,h=Math.abs(f[152].y-f[10].y)+1e-9;
+  return{dx:-(f[1].x-(f[234].x+f[454].x)/2)/w,dy:(f[1].y-(f[10].y+f[152].y)/2)/h};}
+function faceDir(m,base,kx=CFG.faceX,ky=CFG.faceY){const dx=m.dx-base.dx,dy=m.dy-base.dy;
+  if(Math.abs(dx)/kx>Math.abs(dy)/ky){if(Math.abs(dx)>kx)return dx>0?"right":"left";}
+  else if(Math.abs(dy)>ky)return dy>0?"down":"up";return null;}
+
+/* ================= 多数決 ================= */
+class Smoother{constructor(n=9,r=.6){this.n=n;this.r=r;this.b=[];}
+  update(l){this.b.push(l);if(this.b.length>this.n)this.b.shift();
+    const v={};for(const x of this.b)if(x&&x!=="unknown")v[x]=(v[x]||0)+1;
+    const best=Object.entries(v).sort((a,b)=>b[1]-a[1])[0];if(!best)return[null,0];
+    const ratio=best[1]/this.b.length;return ratio>=this.r?[best[0],ratio]:[null,ratio];}
+  reset(){this.b=[];}}
+
+/* ================= 定数・状態 ================= */
+const JANKEN=["rock","paper","scissors"],DIRS=["up","down","left","right"];
+const BEATS={rock:"scissors",paper:"rock",scissors:"paper"},COUNTER={scissors:"rock",rock:"paper",paper:"scissors"};
+const EMOJI={rock:"✊",paper:"✋",scissors:"✌️",up:"👆",down:"👇",left:"👈",right:"👉"};
+const JP={rock:"グー",paper:"パー",scissors:"チョキ",up:"上",down:"下",left:"左",right:"右"};
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const $=id=>document.getElementById(id);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const argmax=o=>Object.entries(o).sort((a,b)=>b[1]-a[1])[0][0];
+let ps=0,as=0,hist=[],faceHist=[],pointHist=[],superMode=false;
+
+/* ================= 予測器 アルゴリズム1 ================= */
+const calib={th:CFG.ext+8,openSum:0,openN:0,closeSum:0,closeN:0};
+function sigmoid(z){return 1/(1+Math.exp(-z));}
+function quadFit(xs,ys){const n=xs.length;if(n<3)return{b:0,c:0};
+  let S0=n,S1=0,S2=0,S3=0,S4=0,T0=0,T1=0,T2=0;
+  for(let i=0;i<n;i++){const x=xs[i],y=ys[i];S1+=x;S2+=x*x;S3+=x*x*x;S4+=x*x*x*x;T0+=y;T1+=x*y;T2+=x*x*y;}
+  const det=S0*(S2*S4-S3*S3)-S1*(S1*S4-S2*S3)+S2*(S1*S3-S2*S2);if(Math.abs(det)<1e-12)return{b:0,c:0};
+  const b=(S0*(T1*S4-S3*T2)-T0*(S1*S4-S2*S3)+S2*(S1*T2-T1*S2))/det;
+  const c=(S0*(S2*T2-T1*S3)-S1*(S1*T2-T1*S2)+T0*(S1*S3-S2*S2))/det;return{b,c};}
+function horizon(samples){const n=samples.length;if(n<3)return CFG.maxHorizon;
+  const vy=(samples[n-1].wy-samples[n-3].wy)/((samples[n-1].t-samples[n-3].t)/1000+1e-6);
+  return vy>0.3?Math.min(CFG.maxHorizon,0.08+0.15*Math.min(1,vy/1.5)):CFG.maxHorizon;}
+function predictHand(samples){if(samples.length<3)return null;
+  const tn=samples[samples.length-1].t,win=samples.filter(s=>tn-s.t<=CFG.preWin);if(win.length<3)return null;
+  const xs=win.map(s=>(s.t-win[0].t)/1000),h=horizon(samples),last=win[win.length-1].c,P={};
+  for(const f of FOUR){const{b,c}=quadFit(xs,win.map(s=>s.c[f]));
+    const proj=Math.max(0,Math.min(120,last[f]+b*h+0.5*c*h*h));P[f]=sigmoid((calib.th-proj)/CFG.sigma);}
+  const sc={paper:FOUR.reduce((a,f)=>a*P[f],1),rock:FOUR.reduce((a,f)=>a*(1-P[f]),1),
+            scissors:P.index*P.middle*(1-P.ring)*(1-P.pinky)};
+  const s=Object.values(sc).reduce((a,b)=>a+b)+1e-9;for(const k in sc)sc[k]/=s;return sc;}
+function markovPrior(){const pr={rock:1,paper:1,scissors:1};const last=hist[hist.length-1];
+  for(let i=0;i<hist.length;i++){pr[hist[i]]+=0.5;if(i>0&&hist[i-1]===last)pr[hist[i]]+=1.5;}
+  const s=Object.values(pr).reduce((a,b)=>a+b);for(const k in pr)pr[k]/=s;return pr;}
+function fusePrediction(early){const pr=markovPrior();const out={};
+  for(const k of JANKEN)out[k]=early?0.8*early[k]+0.2*pr[k]:pr[k];return out;}
+function updateCalib(finalC,hand){const openF={rock:[],paper:FOUR,scissors:["index","middle"]}[hand];
+  for(const f of FOUR){if(openF.includes(f)){calib.openSum+=finalC[f];calib.openN++;}else{calib.closeSum+=finalC[f];calib.closeN++;}}
+  if(calib.openN&&calib.closeN)calib.th=(calib.openSum/calib.openN+calib.closeSum/calib.closeN)/2;}
+function dirPrior(h){const c={up:1,down:1,left:1,right:1};h.slice(-6).forEach(d=>c[d]+=1);return argmax(c);}
+
+/* ================= 音声 ================= */
+function speak(t){$("speech").textContent="🤖 "+t;
+  return new Promise(res=>{const est=300+t.length*140;
+    if(!$("voice").checked||!window.speechSynthesis){setTimeout(res,est);return;}
+    speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang="ja-JP";u.rate=1.1;
+    let done=false;const fin=()=>{if(!done){done=true;res();}};u.onend=fin;u.onerror=fin;
+    speechSynthesis.speak(u);setTimeout(fin,est+1500);});}
+
+/* ================= AIの顔（1.5倍） ================= */
+const fc=$("aiFace").getContext("2d");
+function drawFace(dir="center",mood="normal"){
+  const[ox,oy]={center:[0,0],up:[0,-22],down:[0,22],left:[-26,0],right:[26,0]}[dir];
+  fc.setTransform(1.5,0,0,1.5,0,0);fc.clearRect(0,0,160,160);
+  fc.fillStyle="#ffdbac";fc.beginPath();fc.arc(80,80,70,0,7);fc.fill();
+  fc.fillStyle="#fff";[-24,24].forEach(x=>{fc.beginPath();fc.ellipse(80+x+ox*.6,62+oy*.6,14,10,0,0,7);fc.fill();});
+  fc.fillStyle="#222";[-24,24].forEach(x=>{fc.beginPath();fc.arc(80+x+ox,62+oy,6,0,7);fc.fill();});
+  fc.strokeStyle="#c98a5b";fc.lineWidth=3;fc.beginPath();fc.moveTo(80+ox,72+oy);fc.lineTo(74+ox,92+oy);fc.lineTo(84+ox,92+oy);fc.stroke();
+  fc.strokeStyle="#a0522d";fc.lineWidth=4;fc.beginPath();
+  if(mood==="happy")fc.arc(80+ox,105+oy,16,0.15*Math.PI,0.85*Math.PI);
+  else if(mood==="sad")fc.arc(80+ox,122+oy,16,1.15*Math.PI,1.85*Math.PI);
+  else{fc.moveTo(66+ox,110+oy);fc.lineTo(94+ox,110+oy);}fc.stroke();}
+drawFace();
+
+/* ================= 認識ループ ================= */
+const video=$("video"),cv=$("overlay"),ctx=cv.getContext("2d");
+const CONN=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+let hand=null,face=null,stable=null,busy=false,lastT=-1,frame=0;
+let lastLm=null,lastLmT=0,faceNow=null,faceBase={dx:0,dy:0},baseBuf=[],useFace=false;
+const faceBuf=[],tipBuf=[];const sm=new Smoother();
+const nextFrame=()=>(video.requestVideoFrameCallback?video.requestVideoFrameCallback(loop):requestAnimationFrame(loop));
+
+async function start(){
+  $("start").disabled=true;
+  try{
+    if(!hand){$("msg").textContent="モデル読み込み中…（初回は10〜20秒）";
+      const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+      hand=await HandLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:
+        "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",delegate:"GPU"},
+        runningMode:"VIDEO",numHands:1,minHandDetectionConfidence:.6,minTrackingConfidence:.6});
+      face=await FaceLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:
+        "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",delegate:"GPU"},
+        runningMode:"VIDEO",numFaces:1});}
+    if(video.srcObject)video.srcObject.getTracks().forEach(t=>t.stop());
+    $("msg").textContent="カメラ起動中…";
+    video.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:$("cam").value,width:{ideal:640},height:{ideal:480},frameRate:{ideal:60}},audio:false});
+    await video.play();cv.width=video.videoWidth;cv.height=video.videoHeight;
+    $("go").disabled=false;$("start").disabled=false;$("start").textContent="カメラ再起動";
+    $("msg").textContent="準備完了";await speak("準備完了です。セッション開始を押してください");
+    nextFrame();
+  }catch(e){$("msg").textContent="起動失敗: "+e.message;$("start").disabled=false;}}
+
+function loop(){
+  if(hand&&video.readyState>=2&&video.currentTime!==lastT){lastT=video.currentTime;frame++;
+    const t=performance.now();ctx.clearRect(0,0,cv.width,cv.height);
+    const hr=hand.detectForVideo(video,t);let raw=null,hud="手なし";
+    if(hr.landmarks.length){const lm=hr.landmarks[0];lastLm=lm;lastLmT=t;
+      tipBuf.push({t,x:-lm[8].x,y:lm[8].y});while(tipBuf.length&&t-tipBuf[0].t>1500)tipBuf.shift();
+      ctx.strokeStyle="#fff";ctx.lineWidth=2;
+      for(const[a,b]of CONN){ctx.beginPath();ctx.moveTo(lm[a].x*cv.width,lm[a].y*cv.height);ctx.lineTo(lm[b].x*cv.width,lm[b].y*cv.height);ctx.stroke();}
+      lm.forEach((p,i)=>{ctx.fillStyle=i===8?"#f00":"#0f0";ctx.beginPath();ctx.arc(p.x*cv.width,p.y*cv.height,4,0,7);ctx.fill();});
+      const r=classify(lm);raw=r.g;
+      hud=`${raw} `+FOUR.map(f=>f[0]+r.c[f].toFixed(0)).join(" ")+" | "+FOUR.map(f=>f[0]+tipRatio(lm,f).toFixed(1)).join(" ");}
+    else{lastLm=null;}
+    const[s,ratio]=sm.update(raw);stable=s;
+    $("pHand").textContent=EMOJI[s]||"🤔";$("pInfo").textContent=s?JP[s]:"未確定";$("stab").style.width=(ratio*100)+"%";
+    if(useFace||superMode||frame%3===0){const fr=face.detectForVideo(video,t+0.5);
+      if(fr.faceLandmarks.length){const f=fr.faceLandmarks[0];faceNow=faceMetrics(f);
+        faceBuf.push({t,...faceNow});while(faceBuf.length&&t-faceBuf[0].t>1500)faceBuf.shift();
+        const n=f[1];ctx.fillStyle="#ff0";ctx.beginPath();ctx.arc(n.x*cv.width,n.y*cv.height,6,0,7);ctx.fill();
+        if(!useFace){baseBuf.push(faceNow);if(baseBuf.length>15)baseBuf.shift();
+          faceBase={dx:baseBuf.reduce((a,b)=>a+b.dx,0)/baseBuf.length,dy:baseBuf.reduce((a,b)=>a+b.dy,0)/baseBuf.length};}
+        const d=faceDir(faceNow,faceBase);$("pFace").textContent="顔: "+(d?JP[d]:"正面");
+      }else{faceNow=null;$("pFace").textContent="顔: 未検出";}}
+    $("hud").textContent=hud;}
+  nextFrame();}
+
+async function sample(ms,getter){const v={};const end=performance.now()+ms;
+  while(performance.now()<end){const x=getter();if(x)v[x]=(v[x]||0)+1;await sleep(40);}
+  const b=Object.entries(v).sort((a,b)=>b[1]-a[1])[0];return b?b[0]:null;}
+function velocityDir(buf,win,kx,ky){if(buf.length<2)return null;const now=buf[buf.length-1];let past=buf[0];
+  for(const b of buf){if(now.t-b.t<=win){past=b;break;}}
+  const dx=(now.dx??now.x)-(past.dx??past.x),dy=(now.dy??now.y)-(past.dy??past.y);
+  if(Math.abs(dx)<kx&&Math.abs(dy)<ky)return null;return dirOf(dx,dy);}
+
+/* ================= じゃんけん1回 ================= */
+async function janken(){
+  for(let i=0;i<10;i++){
+    $("aHand").textContent="🤖";$("predInfo").textContent="";
+    await speak("最初はグー");
+    const samples=[];let lt=0,rec=true;
+    const recorder=(async()=>{while(rec){if(lastLm&&lastLmT!==lt){lt=lastLmT;
+      samples.push({t:lastLmT,c:curls(lastLm),wy:lastLm[0].y});if(samples.length>60)samples.shift();}await sleep(8);}})();
+    await speak("じゃんけん");
+    const t0=performance.now();speak("ぽん！");let a,ph,conf=0,lat=0;
+    if(superMode){
+      while(true){const el=performance.now()-t0;const pred=fusePrediction(predictHand(samples));
+        ph=argmax(pred);conf=pred[ph];
+        if(conf>=CFG.confidence||el>=CFG.hardDeadline){a=COUNTER[ph];lat=el;break;}await sleep(8);}
+      $("aHand").textContent=EMOJI[a];
+      $("predInfo").textContent=`予測:${JP[ph]} ${(conf*100).toFixed(0)}% ${lat.toFixed(0)}ms後 th${calib.th.toFixed(0)}`;
+      await sleep(450);
+    }else{a=pick(JANKEN);await sleep(500);$("aHand").textContent=EMOJI[a];}
+    rec=false;await recorder;
+    const p=stable;
+    if(!JANKEN.includes(p)){$("msg").textContent="手が見えません。もう一度";await speak("手が見えません");continue;}
+    hist.push(p);if(lastLm)updateCalib(curls(lastLm),p);
+    if(p!==a)return{p,a,winner:BEATS[p]===a?"player":"ai"};
+    $("msg").textContent="あいこ！";await speak("あいこ");await speak("もう一度");}
+  return null;}
+
+/* ================= あっち向いてほい ================= */
+async function acchi(winner){
+  $("phase").textContent="あっち向いてほい";
+  await speak("あっち向いて");speak("ほい！");
+  if(winner==="ai"){
+    useFace=true;let d;
+    if(superMode){await sleep(CFG.preFaceWin);d=velocityDir(faceBuf,350,CFG.velX,CFG.velY)||dirPrior(faceHist);
+      $("predInfo").textContent="顔予測:"+JP[d];}
+    else{d=pick(DIRS);await sleep(300);}
+    $("aHand").textContent=EMOJI[d];$("aHand").className="huge";drawFace("center","happy");
+    const fd=await sample(900,()=>faceNow?faceDir(faceNow,faceBase):null);useFace=false;
+    if(fd)faceHist.push(fd);$("pFace").textContent="顔: "+(fd?JP[fd]:"正面");
+    if(fd===d){as++;$("msg").textContent="わたしのかち！";$("msg").className="lose";await speak("わたしのかち！");}
+    else{$("msg").textContent="はずれ！";$("msg").className="win";drawFace("center","sad");await speak("外れました");}
+  }else{
+    let d;
+    if(superMode){await sleep(CFG.preFaceWin);
+      const guess=(DIRS.includes(stable)?stable:null)||velocityDir(tipBuf,350,CFG.tipVel,CFG.tipVel)||dirPrior(pointHist);
+      d=pick(DIRS.filter(x=>x!==guess));$("predInfo").textContent="指予測:"+JP[guess]+"→回避";}
+    else{d=pick(DIRS);await sleep(300);}
+    drawFace(d,"normal");$("aHand").textContent="";
+    const pd=await sample(900,()=>DIRS.includes(stable)?stable:null);if(pd)pointHist.push(pd);
+    if(!pd){$("msg").textContent="指の方向が読めませんでした";await speak("方向が分かりません");}
+    else if(pd===d){ps++;$("msg").textContent="わたしのまけ…";$("msg").className="win";drawFace(d,"sad");await speak("わたしのまけ");}
+    else{$("msg").textContent="セーフ！";$("msg").className="";drawFace(d,"happy");await speak("セーフ！");}
+  }
+  $("score").textContent=`${ps} : ${as}`;}
+
+/* ================= セッション ================= */
+async function session(){
+  if(busy||$("go").disabled)return;busy=true;$("go").disabled=true;ps=as=0;$("score").textContent="0 : 0";
+  $("phase").textContent="回数決定";$("msg").className="";$("msg").textContent="何回勝負にする？";
+  await speak("何回勝負にする？");$("msg").textContent="指で1本、2本、3本で示してね";speak("指で1本、2本、3本で示してね");
+  await sleep(600);let n=await sample(2000,()=>{if(!lastLm)return null;const c=fingerCount(lastLm);return c>=1&&c<=3?String(c):null;});
+  n=n?+n:1;$("roundInfo").textContent=`${n}回勝負`;await speak(`${n}回勝負です`);
+  for(let r=1;r<=n;r++){
+    $("roundInfo").textContent=`第${r}回 / ${n}回勝負`;$("phase").textContent="じゃんけん";$("msg").textContent="";$("msg").className="";
+    $("aHand").className="big";drawFace();
+    const res=await janken();
+    if(!res){$("msg").textContent="あいこが続きました";continue;}
+    if(res.winner==="ai"){$("msg").textContent="AIの勝ち！";$("msg").className="lose";drawFace("center","happy");await speak("私の勝ちです");}
+    else{$("msg").textContent="あなたの勝ち！";$("msg").className="win";drawFace("center","sad");await speak("あなたの勝ちです");}
+    await acchi(res.winner);await sleep(1500);$("aHand").className="big";$("predInfo").textContent="";}
+  $("phase").textContent="セッション終了";
+  const fin=ps>as?"あなたの勝ちです":as>ps?"わたしの勝ちです":"引き分けです";
+  $("msg").textContent=`終了！ ${ps}対${as} ${fin}`;$("msg").className=ps>as?"win":as>ps?"lose":"";await speak(`セッション終了。${ps}対${as}。${fin}`);
+  busy=false;$("go").disabled=false;}
+
+$("start").onclick=start;$("go").onclick=session;
+$("superBtn").onclick=()=>{superMode=!superMode;$("superBtn").className=superMode?"on":"";
+  $("superBtn").textContent="スーパーモード "+(superMode?"ON":"OFF");speak(superMode?"スーパーモード、オン":"スーパーモード、オフ");};
+$("reset").onclick=()=>{ps=as=0;hist=[];faceHist=[];pointHist=[];sm.reset();$("score").textContent="0 : 0";$("phase").textContent="待機中";
+  $("msg").textContent="";$("msg").className="";$("aHand").textContent="🤖";$("aHand").className="big";$("roundInfo").innerHTML="&nbsp;";$("predInfo").textContent="";drawFace();speak("リセットしました");};
+</script>
+</body>
+</html>
