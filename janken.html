@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>AI じゃんけん・あっち向いてほい</title>
+<style>
+  :root{--bg:#111827;--card:#1f2937;--acc:#3b82f6;--ok:#22c55e;--ng:#ef4444;--warn:#f59e0b}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:#fff;min-height:100dvh;padding:8px}
+  .wrap{max-width:1000px;margin:0 auto;display:grid;gap:8px;grid-template-columns:1fr}
+  @media(min-width:760px){.wrap{grid-template-columns:1fr 1fr}.full{grid-column:1/-1}}
+  h1{font-size:1.1rem;text-align:center}
+  .status{text-align:center}
+  #phase{font-weight:700;color:var(--warn)}
+  #msg{min-height:1.4em}
+  #speech{color:#93c5fd;font-size:.9rem;min-height:1.2em}
+  .stage{position:relative;aspect-ratio:4/3;background:#000;border-radius:14px;overflow:hidden}
+  @media(max-width:759px){.stage{aspect-ratio:3/4}}
+  video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  .hud{position:absolute;left:8px;top:8px;background:rgba(0,0,0,.6);padding:4px 8px;border-radius:8px;font-size:.75rem;font-family:monospace}
+  .panel{display:grid;gap:8px;grid-template-columns:1fr 1fr 1fr}
+  .card{background:var(--card);border-radius:12px;padding:8px;text-align:center}
+  .big{font-size:2.4rem;line-height:1.2}
+  .sub{font-size:.8rem;opacity:.8}
+  #score{font-size:1.6rem;font-weight:700}
+  .row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+  button{flex:1;min-width:90px;padding:14px;border:0;border-radius:12px;font-size:1.05rem;font-weight:700;color:#fff;background:var(--acc);cursor:pointer}
+  button:disabled{opacity:.4;cursor:default}
+  #go{background:var(--ng)}
+  select{padding:8px;border-radius:8px;border:0}
+  label{font-size:.85rem;display:flex;align-items:center;gap:4px}
+  .bar{height:6px;background:#000;border-radius:3px;overflow:hidden;margin-top:4px}
+  .bar i{display:block;height:100%;width:0;background:var(--ok);transition:width .2s}
+  .help{font-size:.8rem;opacity:.75;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="full">
+    <h1>🤖 AI じゃんけん・あっち向いてほい</h1>
+    <div class="status"><div id="phase">じゃんけん</div><div id="msg">「開始」を押してカメラを許可してください</div><div id="speech"></div></div>
+  </div>
+
+  <div class="stage">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="overlay"></canvas>
+    <div class="hud" id="hud">未起動</div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <div class="card"><div class="sub">あなた</div><div class="big" id="pHand">🤔</div>
+        <div class="sub" id="pInfo">未確定</div><div class="bar"><i id="stab"></i></div></div>
+      <div class="card"><div class="sub">スコア</div><div id="score">0 : 0</div><div class="sub" id="attacker">&nbsp;</div></div>
+      <div class="card"><div class="sub">AI</div><div class="big" id="aFace">😊</div><div class="big" id="aHand">🤖</div></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="start">開始</button>
+      <button id="go" disabled>ぽん！</button>
+      <button id="reset">リセット</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <select id="cam"><option value="user">内カメラ</option><option value="environment">外カメラ</option></select>
+      <label><input type="checkbox" id="voice" checked>音声</label>
+      <label><input type="checkbox" id="declare" checked>AI宣言</label>
+      <label><input type="checkbox" id="kb">キーボード入力</label>
+    </div>
+    <p class="help" style="margin-top:8px">手：✊グー ✋パー ✌️チョキ／方向：人差し指だけ伸ばして上下左右<br>
+      PC：R=グー P=パー S=チョキ ↑↓←→=方向 Space=ぽん！</p>
+  </div>
+</div>
+
+<script type="module">
+import {HandLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+/* ---------- 分類器（関節角度ベース） ---------- */
+const F={thumb:[1,2,3,4],index:[5,6,7,8],middle:[9,10,11,12],ring:[13,14,15,16],pinky:[17,18,19,20]};
+const CFG={ext:40,curled:70,thumbDeg:30,thumbDist:0.9,pointLen:0.6};
+const sub=(a,b)=>[a.x-b.x,a.y-b.y,a.z-b.z], norm=v=>Math.hypot(...v);
+function angle(a,b,c){const v1=sub(a,b),v2=sub(c,b),n=norm(v1)*norm(v2);if(n<1e-9)return 180;
+  return Math.acos(Math.max(-1,Math.min(1,(v1[0]*v2[0]+v1[1]*v2[1]+v1[2]*v2[2])/n)))*180/Math.PI;}
+const palm=lm=>norm(sub(lm[9],lm[0]))+1e-9;
+function curl(lm,f){const[m,p,d,t]=F[f];return((180-angle(lm[m],lm[p],lm[d]))+(180-angle(lm[p],lm[d],lm[t])))/2;}
+function thumbExt(lm){const[c,m,i,t]=F.thumb;
+  const bend=((180-angle(lm[c],lm[m],lm[i]))+(180-angle(lm[m],lm[i],lm[t])))/2;
+  return bend<CFG.thumbDeg&&norm(sub(lm[t],lm[5]))/palm(lm)>CFG.thumbDist;}
+function pointDir(lm){const v=[lm[8].x-lm[5].x,lm[8].y-lm[5].y];
+  if(Math.hypot(...v)/palm(lm)<CFG.pointLen)return null;
+  const a=Math.atan2(-v[1],-v[0])*180/Math.PI;   // 鏡像表示に合わせて x 反転
+  if(a>=-45&&a<45)return"right";if(a>=45&&a<135)return"up";if(a>=-135&&a<-45)return"down";return"left";}
+function classify(lm){
+  const c={index:curl(lm,"index"),middle:curl(lm,"middle"),ring:curl(lm,"ring"),pinky:curl(lm,"pinky")};
+  const e=Object.fromEntries(Object.entries(c).map(([k,v])=>[k,v<CFG.ext]));
+  if(Object.values(c).every(v=>v>=CFG.curled))return{g:"rock",c};
+  if(e.index&&e.middle&&e.ring&&e.pinky)return{g:"paper",c};
+  if(e.index&&e.middle&&!e.ring&&!e.pinky)return{g:"scissors",c};
+  if(e.index&&!e.middle&&!e.ring&&!e.pinky)return{g:pointDir(lm)||"unknown",c};
+  return{g:"unknown",c};}
+
+/* ---------- 多数決スムーザー ---------- */
+class Smoother{constructor(n=9,r=.6){this.n=n;this.r=r;this.b=[];}
+  update(l){this.b.push(l);if(this.b.length>this.n)this.b.shift();
+    const v={};for(const x of this.b)if(x&&x!=="unknown")v[x]=(v[x]||0)+1;
+    const best=Object.entries(v).sort((a,b)=>b[1]-a[1])[0];if(!best)return[null,0];
+    const ratio=best[1]/this.b.length;return ratio>=this.r?[best[0],ratio]:[null,ratio];}
+  reset(){this.b=[];}}
+
+/* ---------- ゲームロジック ---------- */
+const JANKEN=["rock","paper","scissors"],DIRS=["up","down","left","right"];
+const BEATS={rock:"scissors",paper:"rock",scissors:"paper"},COUNTER={scissors:"rock",rock:"paper",paper:"scissors"};
+const EMOJI={rock:"✊",paper:"✋",scissors:"✌️",up:"👆",down:"👇",left:"👈",right:"👉"};
+const JP={rock:"グー",paper:"パー",scissors:"チョキ",up:"上",down:"下",left:"左",right:"右"};
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const game={phase:"janken",attacker:null,ps:0,as:0,hist:[],
+  aiJanken(){const r=this.hist.slice(-10);if(r.length&&Math.random()>.25){const cnt={};
+      r.forEach(h=>cnt[h]=(cnt[h]||0)+1);return COUNTER[Object.entries(cnt).sort((a,b)=>b[1]-a[1])[0][0]];}return pick(JANKEN);},
+  play(p){
+    if(this.phase==="janken"){
+      if(!JANKEN.includes(p))return{outcome:"invalid",msg:"グー・チョキ・パーを出してください"};
+      const a=this.aiJanken();this.hist.push(p);
+      if(p===a)return{p,a,outcome:"draw",msg:"あいこ！もう一度"};
+      const w=BEATS[p]===a?"player":"ai";this.phase="attack";this.attacker=w;
+      const who=w==="player"?"あなた":"AI";return{p,a,outcome:w,msg:`${who}の勝ち！${who}が指します`};}
+    if(!DIRS.includes(p))return{outcome:"invalid",msg:"上下左右を指してください"};
+    const a=pick(DIRS),hit=p===a;if(hit)this.attacker==="player"?this.ps++:this.as++;
+    const who=this.attacker==="player"?"あなた":"AI";this.phase="janken";this.attacker=null;
+    return{p,a,outcome:hit?"hit":"miss",msg:hit?`命中！${who}の得点`:"外れ！じゃんけんに戻ります"};},
+  reset(){Object.assign(this,{phase:"janken",attacker:null,ps:0,as:0,hist:[]});}};
+
+/* ---------- 音声 ---------- */
+const $=id=>document.getElementById(id);
+function say(t){$("speech").textContent="🤖 "+t;if(!$("voice").checked||!window.speechSynthesis)return;
+  speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang="ja-JP";u.rate=1.1;speechSynthesis.speak(u);}
+
+/* ---------- 認識ループ ---------- */
+const video=$("video"),cv=$("overlay"),ctx=cv.getContext("2d");
+const CONN=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+let lmk=null,stable=null,busy=false,lastT=-1,kbHand=null;const sm=new Smoother();
+
+async function start(){
+  $("start").disabled=true;
+  try{
+    if(!lmk){$("msg").textContent="モデル読み込み中…（初回は10秒程度）";
+      const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+      lmk=await HandLandmarker.createFromOptions(vision,{baseOptions:{
+        modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+        delegate:"GPU"},runningMode:"VIDEO",numHands:1,minHandDetectionConfidence:.6,minTrackingConfidence:.6});}
+    if(video.srcObject)video.srcObject.getTracks().forEach(t=>t.stop());
+    $("msg").textContent="カメラ起動中…";
+    video.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:$("cam").value,width:{ideal:640},height:{ideal:480}},audio:false});
+    await video.play();cv.width=video.videoWidth;cv.height=video.videoHeight;
+    $("go").disabled=false;$("start").disabled=false;$("start").textContent="カメラ再起動";
+    $("msg").textContent="準備完了";say("準備完了です。じゃんけんしましょう");
+    requestAnimationFrame(loop);
+  }catch(e){$("msg").textContent="起動失敗: "+e.message+"（キーボード入力なら遊べます）";$("start").disabled=false;
+    $("kb").checked=true;$("go").disabled=false;}}
+
+function loop(){
+  if(lmk&&video.readyState>=2&&video.currentTime!==lastT){lastT=video.currentTime;
+    const res=lmk.detectForVideo(video,performance.now());
+    ctx.clearRect(0,0,cv.width,cv.height);let raw=null,hud="手なし";
+    if(res.landmarks.length){const lm=res.landmarks[0];
+      ctx.strokeStyle="#fff";ctx.lineWidth=2;
+      for(const[a,b]of CONN){ctx.beginPath();ctx.moveTo(lm[a].x*cv.width,lm[a].y*cv.height);ctx.lineTo(lm[b].x*cv.width,lm[b].y*cv.height);ctx.stroke();}
+      lm.forEach((p,i)=>{ctx.fillStyle=i===8?"#f00":"#0f0";ctx.beginPath();ctx.arc(p.x*cv.width,p.y*cv.height,i%4===0&&i?6:4,0,7);ctx.fill();});
+      const r=classify(lm);raw=r.g;
+      hud=`${res.handedness[0][0].categoryName} ${raw} `+Object.entries(r.c).map(([k,v])=>k[0]+v.toFixed(0)).join(" ");}
+    $("hud").textContent=hud;
+    if(!$("kb").checked){const[s,ratio]=sm.update(raw);stable=s;
+      $("pHand").textContent=EMOJI[s]||"🤔";$("pInfo").textContent=s?JP[s]:"未確定";$("stab").style.width=(ratio*100)+"%";}}
+  requestAnimationFrame(loop);}
+
+/* ---------- キーボード（PC用フォールバック） ---------- */
+const KEYS={r:"rock",p:"paper",s:"scissors",arrowup:"up",arrowdown:"down",arrowleft:"left",arrowright:"right"};
+document.addEventListener("keydown",e=>{const k=e.key.toLowerCase();
+  if(k===" "){e.preventDefault();go();return;}
+  if(!$("kb").checked||!(k in KEYS))return;e.preventDefault();
+  stable=kbHand=KEYS[k];$("pHand").textContent=EMOJI[stable];$("pInfo").textContent=JP[stable]+"（キー）";$("stab").style.width="100%";});
+
+/* ---------- 1手番 ---------- */
+function go(){if(busy||$("go").disabled)return;busy=true;let n=3;
+  const tick=()=>{if(n>0){$("msg").textContent=n+"…";say(String(n));n--;setTimeout(tick,800);return;}
+    $("msg").textContent="ぽん！";
+    if(!stable){$("msg").textContent="手が確定しません。もう一度";busy=false;return;}
+    const r=game.play(stable);
+    if(r.outcome==="invalid"){$("msg").textContent=r.msg;busy=false;return;}
+    $("aHand").textContent=EMOJI[r.a];if($("declare").checked)say(`私は${JP[r.a]}です`);
+    $("aFace").textContent={player:"😢",ai:"😄",draw:"😐",hit:"🎉",miss:"😅"}[r.outcome];
+    $("msg").textContent=r.msg;setTimeout(()=>say(r.msg),1200);
+    $("phase").textContent=game.phase==="attack"?"あっち向いてほい":"じゃんけん";
+    $("attacker").innerHTML=game.attacker?(game.attacker==="player"?"あなたが指す":"AIが指す"):"&nbsp;";
+    $("score").textContent=`${game.ps} : ${game.as}`;busy=false;};
+  tick();}
+
+$("start").onclick=start;$("go").onclick=go;
+$("reset").onclick=()=>{game.reset();sm.reset();$("score").textContent="0 : 0";$("phase").textContent="じゃんけん";
+  $("aFace").textContent="😊";$("aHand").textContent="🤖";$("attacker").innerHTML="&nbsp;";say("リセットしました");};
+</script>
+</body>
+</html>
