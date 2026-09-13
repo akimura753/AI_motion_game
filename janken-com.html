@@ -46,7 +46,6 @@
   <div id="status" role="status" aria-live="assertive">はじめに、あなたのことを教えてね</div>
   <div class="hint">画面のボタン以外をタップすると、いまの内容をもう一度読み上げます</div>
 
-  <!-- 画面1：アクセシビリティ設定 -->
   <section id="s-acc" class="screen on">
     <div class="card"><div class="lbl">あなたは？（あてはまるものを押してね）</div></div>
     <div class="grid2">
@@ -56,7 +55,6 @@
     <button id="accNext" class="sel">つぎへ ▶</button>
   </section>
 
-  <!-- 画面2：相手の選択 -->
   <section id="s-conn" class="screen">
     <div class="grid2">
       <button id="btnHost">📱 部屋をつくる<br><span class="sub">番号を相手に教える</span></button>
@@ -76,7 +74,6 @@
     </div>
   </section>
 
-  <!-- 画面3：ゲーム -->
   <section id="s-game" class="screen">
     <div class="stage">
       <video id="video" autoplay muted playsinline></video>
@@ -99,11 +96,9 @@
     <button id="btnAgain" class="small" style="display:none">🔁 もういちど</button>
   </section>
 </div>
-
 <script type="module">
 import {HandLandmarker, FaceLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
-/* ================= アクセシビリティ ================= */
 const A={blind:false,deaf:false};
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -113,26 +108,22 @@ let audioCtx=null;
 function beep(freq=880,ms=80,vol=.25){try{audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
   const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.frequency.value=freq;g.gain.value=vol;o.connect(g);g.connect(audioCtx.destination);
   o.start();o.stop(audioCtx.currentTime+ms/1000);}catch(e){}}
-/* keep=true のときは前の発話を打ち切らず、続けて読む（結果の読み上げ用） */
 function say(t,{rate=1.0,keep=false}={}){
   if(!window.speechSynthesis)return;if(!keep)speechSynthesis.cancel();
   const u=new SpeechSynthesisUtterance(t);u.lang="ja-JP";u.rate=A.blind?rate*1.15:rate;speechSynthesis.speak(u);}
 let lastStatus="";
 function status(t,cls="",{speak=true}={}){$("status").textContent=t;$("status").className=cls;lastStatus=t;
-  if(speak)say(t,{keep:cls!==""});}   // 勝敗・あいこ（クラス付き）は前の発話に続けて必ず最後まで読む
+  if(speak)say(t,{keep:cls!==""});}
 function repeatStatus(){if(lastStatus)say(lastStatus);vib([60]);}
 document.addEventListener("click",e=>{if(e.target.closest("button,input"))return;repeatStatus();});
-/* 合図：目が見えにくい→ビープ＋振動、耳が聞こえにくい→点滅＋振動、両方は常に */
 function cue(kind){
   const P={tick:[80],pon:[250],win:[150,80,150,80,300],lose:[600],draw:[100,100,100],hoi:[250]};
   vib(P[kind]||[100]);
   if(kind==="tick")beep(660,60);if(kind==="pon"||kind==="hoi")beep(1046,200,.4);
   if(kind==="win")beep(1320,300,.4);if(kind==="lose")beep(330,400,.4);if(kind==="draw")beep(784,150);
   if(A.deaf||!A.blind)flash(kind==="pon"||kind==="hoi"?350:150);}
-/* 結果を確実に伝える：読み上げ → 間 → もう一度読み上げ */
 async function announceResult(t,cls,kind){status(t,cls);cue(kind);await sleep(2600);say(lastStatus,{keep:true});await sleep(2400);}
 
-/* ================= 手の分類（finger版 v2） ================= */
 const F={thumb:[1,2,3,4],index:[5,6,7,8],middle:[9,10,11,12],ring:[13,14,15,16],pinky:[17,18,19,20]};
 const FOUR=["index","middle","ring","pinky"];
 const CFG={ext:40,curled:55,pointLen:0.6,faceX:0.15,faceY:0.07};
@@ -160,7 +151,6 @@ function classify(lm){const c=curls(lm);const e=Object.fromEntries(FOUR.map(f=>[
   if(e.index&&!e.middle&&!e.ring&&!e.pinky)return pointDir(lm)||"unknown";
   return"unknown";}
 
-/* ================= 顔の向き ================= */
 function faceMetrics(f){const w=Math.abs(f[454].x-f[234].x)+1e-9,h=Math.abs(f[152].y-f[10].y)+1e-9;
   return{dx:-(f[1].x-(f[234].x+f[454].x)/2)/w,dy:(f[1].y-(f[10].y+f[152].y)/2)/h};}
 function faceDir(m,base){const dx=m.dx-base.dx,dy=m.dy-base.dy;
@@ -172,14 +162,12 @@ class Smoother{constructor(n=9,r=.6){this.n=n;this.r=r;this.b=[];}
     const best=Object.entries(v).sort((a,b)=>b[1]-a[1])[0];if(!best)return null;
     return best[1]/this.b.length>=this.r?best[0]:null;}}
 
-/* ================= 定数 ================= */
 const JANKEN=["rock","paper","scissors"],DIRS=["up","down","left","right"];
 const BEATS={rock:"scissors",paper:"rock",scissors:"paper"};
 const EMOJI={rock:"✊",paper:"✋",scissors:"✌️",up:"👆",down:"👇",left:"👈",right:"👉"};
 const JP={rock:"グー",paper:"パー",scissors:"チョキ",up:"うえ",down:"した",left:"ひだり",right:"みぎ"};
 const pick=a=>a[Math.floor(Math.random()*a.length)];
 
-/* ================= 画面1：アクセシビリティ ================= */
 function toggle(btn,key){A[key]=!A[key];btn.setAttribute("aria-pressed",A[key]);btn.classList.toggle("sel",A[key]);
   say(A[key]?btn.textContent.split("\n")[0]+"、オン":"オフ");vib([60]);}
 $("accBlind").onclick=()=>toggle($("accBlind"),"blind");
@@ -189,7 +177,6 @@ function show(id){document.querySelectorAll(".screen").forEach(s=>s.classList.re
 lastStatus="はじめに、あなたのことを教えてね。目が見えにくい、耳が聞こえにくい、あてはまるボタンを押してから、つぎへ、を押してね";
 say(lastStatus);
 
-/* ================= 通信（PeerJS） ================= */
 let peer=null,conn=null,isHost=false,solo=false;
 const PREFIX="janken-com-";
 function send(o){if(conn&&conn.open)conn.send(o);}
@@ -225,7 +212,6 @@ $("btnConnect").onclick=()=>{const code=$("codeIn").value.trim();if(code.length!
 $("btnSolo").onclick=()=>{solo=true;isHost=true;show("s-game");$("oppName").textContent="AI";$("hostCtl").style.display="block";
   status("AIと練習します。カメラをつけてから、なんかい勝負か選んでね");};
 
-/* ================= カメラ・認識 ================= */
 const video=$("video"),cv=$("overlay"),ctx=cv.getContext("2d");
 let hand=null,face=null,lastT=-1,frame=0,stable=null,lastLm=null,faceNow=null,faceBase={dx:0,dy:0},baseBuf=[],useFace=false;
 const sm=new Smoother();let lastBeepHand=0,lastBeepFace=0;
@@ -266,7 +252,6 @@ async function sample(ms,getter){const v={};const end=performance.now()+ms;
   while(performance.now()<end){const x=getter();if(x)v[x]=(v[x]||0)+1;await sleep(40);}
   const b=Object.entries(v).sort((a,b)=>b[1]-a[1])[0];return b?b[0]:null;}
 
-/* ================= ゲーム進行（両端末で同じ時刻表で進む） ================= */
 let ps=0,os=0;
 document.querySelectorAll(".rounds").forEach(b=>b.onclick=()=>{const n=+b.dataset.n;$("hostCtl").style.display="none";
   const at=Date.now()+2000;send({type:"go",n,at});runSession(n,at);});
@@ -292,7 +277,6 @@ async function runSession(n,at){
       await announceResult(`あなた${JP[mine]}、あいて${JP[theirs]}。${winner==="me"?"あなたの勝ち！ つぎは、あなたがゆびで指すよ":"あいての勝ち。つぎは、あなたが顔をむけるよ"}`,
         winner==="me"?"win":"lose",winner==="me"?"win":"lose");}
     if(!winner){status("あいこがつづいたので次へ");await sleep(2000);continue;}
-    // あっち向いてほい
     $("oppHand").textContent="❔";$("oppLbl").textContent="-";
     status(winner==="me"?"あっちむいて…（ゆびで、うえ・した・みぎ・ひだりを指してね）":"あっちむいて…（顔を、うえ・した・みぎ・ひだり、どこかにむけてね）");
     cue("tick");await sleep(2400);
