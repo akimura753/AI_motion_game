@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>AI じゃんけん・あっち向いてほい【アルゴリズム1 finger版】</title>
+<title>AI じゃんけん・あっち向いてほい【アルゴリズム1 finger版 v2】</title>
 <style>
   :root{--bg:#111827;--card:#1f2937;--acc:#3b82f6;--ok:#22c55e;--ng:#ef4444;--warn:#f59e0b;--sup:#a855f7}
   *{box-sizing:border-box;margin:0;padding:0}
@@ -19,7 +19,7 @@
   .stage{position:relative;aspect-ratio:4/3;background:#000;border-radius:14px;overflow:hidden}
   @media(max-width:759px){.stage{aspect-ratio:3/4}}
   video,canvas.cam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-  .hud{position:absolute;left:8px;top:8px;background:rgba(0,0,0,.6);padding:4px 8px;border-radius:8px;font-size:.75rem;font-family:monospace}
+  .hud{position:absolute;left:8px;top:8px;background:rgba(0,0,0,.6);padding:4px 8px;border-radius:8px;font-size:.7rem;font-family:monospace;max-width:95%}
   .panel{display:grid;gap:8px;grid-template-columns:1fr 1fr}
   .card{background:var(--card);border-radius:12px;padding:8px;text-align:center}
   .big{font-size:3.6rem;line-height:1.2}
@@ -43,7 +43,7 @@
 <body>
 <div class="wrap">
   <div class="full">
-    <h1>🤖 AI じゃんけん・あっち向いてほい【アルゴリズム1 finger版】</h1>
+    <h1>🤖 AI じゃんけん・あっち向いてほい【アルゴリズム1 finger版 v2】</h1>
     <div class="status"><div id="phase">待機中</div><div id="msg">「開始」を押してカメラを許可してください</div><div id="speech"></div></div>
   </div>
 
@@ -80,10 +80,10 @@
 <script type="module">
 import {HandLandmarker, FaceLandmarker, FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
-/* ================= 手の分類（finger版：角度＋指先距離の併用、相対判定） ================= */
+/* ================= 手の分類（finger版 v2） ================= */
 const F={thumb:[1,2,3,4],index:[5,6,7,8],middle:[9,10,11,12],ring:[13,14,15,16],pinky:[17,18,19,20]};
 const FOUR=["index","middle","ring","pinky"];
-const CFG={ext:40,curled:70,pointLen:0.6,faceX:0.15,faceY:0.07,
+const CFG={ext:40,curled:55,pointLen:0.6,faceX:0.15,faceY:0.07,
            preWin:150,hardDeadline:120,confidence:0.80,sigma:12,maxHorizon:0.25,
            preFaceWin:250,velX:0.05,velY:0.03,tipVel:0.08};
 const sub=(a,b)=>[a.x-b.x,a.y-b.y,a.z-b.z], norm=v=>Math.hypot(...v);
@@ -92,7 +92,8 @@ function angle(a,b,c){const v1=sub(a,b),v2=sub(c,b),n=norm(v1)*norm(v2);if(n<1e-
 const palm=lm=>norm(sub(lm[9],lm[0]))+1e-9;
 function curl(lm,f){const[m,p,d,t]=F[f];return((180-angle(lm[m],lm[p],lm[d]))+(180-angle(lm[p],lm[d],lm[t])))/2;}
 const curls=lm=>Object.fromEntries(FOUR.map(f=>[f,curl(lm,f)]));
-const tipRatio=(lm,f)=>norm(sub(lm[F[f][3]],lm[0]))/palm(lm);          // 伸展≈1.7〜2.0, 屈曲≈0.8〜1.2
+const tipRatio=(lm,f)=>norm(sub(lm[F[f][3]],lm[0]))/palm(lm);          // 指先〜手首：伸展≈1.7〜2.0, 屈曲≈0.8〜1.2
+const tipMcp=(lm,f)=>norm(sub(lm[F[f][3]],lm[F[f][0]]))/palm(lm);      // 指先〜付け根：握ると≈0.3〜0.6, 伸ばすと≈0.9〜1.1
 function extended(lm,f,c){return c[f]<CFG.ext||tipRatio(lm,f)>1.5;}
 function thumbOut(lm){return norm(sub(lm[4],lm[9]))/palm(lm)>0.9;}
 function pointDir(lm){const v=[lm[8].x-lm[5].x,lm[8].y-lm[5].y];
@@ -101,11 +102,15 @@ function dirOf(sx,sy){const a=Math.atan2(-sy,sx)*180/Math.PI;
   if(a>=-45&&a<45)return"right";if(a>=45&&a<135)return"up";if(a>=-135&&a<-45)return"down";return"left";}
 function classify(lm){const c=curls(lm);const e=Object.fromEntries(FOUR.map(f=>[f,extended(lm,f,c)]));
   const n=FOUR.filter(f=>e[f]).length;
-  if(FOUR.every(f=>c[f]>=CFG.curled&&tipRatio(lm,f)<1.3))return{g:"rock",c};
+  // グー：どの指も伸展していない / 4本とも指先が付け根に近い / 4本とも角度55°以上かつ指先距離比1.4未満
+  if(n===0||FOUR.every(f=>tipMcp(lm,f)<0.7)||(FOUR.every(f=>c[f]>=CFG.curled)&&FOUR.every(f=>tipRatio(lm,f)<1.4)))return{g:"rock",c};
+  // チョキ：人差し指・中指が伸び、薬指・小指がそれより明確に曲がっている（相対判定）
   const im=(c.index+c.middle)/2, rp=(c.ring+c.pinky)/2;
   const imTip=(tipRatio(lm,"index")+tipRatio(lm,"middle"))/2, rpTip=(tipRatio(lm,"ring")+tipRatio(lm,"pinky"))/2;
   if(e.index&&e.middle&&(rp-im>25||imTip-rpTip>0.45))return{g:"scissors",c};
+  // パー：4本伸展、または人差し指〜薬指が伸展＋親指が開いている
   if(n===4||(e.index&&e.middle&&e.ring&&thumbOut(lm)))return{g:"paper",c};
+  // 指差し：人差し指のみ
   if(e.index&&!e.middle&&!e.ring&&!e.pinky)return{g:pointDir(lm)||"unknown",c};
   return{g:"unknown",c};}
 const fingerCount=lm=>{const c=curls(lm);return FOUR.filter(f=>extended(lm,f,c)).length;};
@@ -227,7 +232,7 @@ function loop(){
       for(const[a,b]of CONN){ctx.beginPath();ctx.moveTo(lm[a].x*cv.width,lm[a].y*cv.height);ctx.lineTo(lm[b].x*cv.width,lm[b].y*cv.height);ctx.stroke();}
       lm.forEach((p,i)=>{ctx.fillStyle=i===8?"#f00":"#0f0";ctx.beginPath();ctx.arc(p.x*cv.width,p.y*cv.height,4,0,7);ctx.fill();});
       const r=classify(lm);raw=r.g;
-      hud=`${raw} `+FOUR.map(f=>f[0]+r.c[f].toFixed(0)).join(" ")+" | "+FOUR.map(f=>f[0]+tipRatio(lm,f).toFixed(1)).join(" ");}
+      hud=`${raw} 角:`+FOUR.map(f=>f[0]+r.c[f].toFixed(0)).join(" ")+" 先:"+FOUR.map(f=>f[0]+tipRatio(lm,f).toFixed(1)).join(" ")+" 根:"+FOUR.map(f=>f[0]+tipMcp(lm,f).toFixed(1)).join(" ");}
     else{lastLm=null;}
     const[s,ratio]=sm.update(raw);stable=s;
     $("pHand").textContent=EMOJI[s]||"🤔";$("pInfo").textContent=s?JP[s]:"未確定";$("stab").style.width=(ratio*100)+"%";
